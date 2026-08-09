@@ -54,10 +54,10 @@ Fail the check when serious findings exist:
 Combine with branch protection to require the check before merging. Leave
 `fail-on` unset for a purely advisory review.
 
-## Acting on review comments: `@tackle fix this`
+## Acting on review comments: `/tackle fix this`
 
 The `respond` sub-action closes the loop. When a maintainer replies to any
-review comment with `@tackle <instruction>`, Tackle applies the change, pushes
+review comment with `/tackle <instruction>`, Tackle applies the change, pushes
 a commit to the PR branch, and replies in the thread. Questions get answered
 in-thread without touching code.
 
@@ -78,7 +78,7 @@ permissions:
 jobs:
   respond:
     if: >
-      contains(github.event.comment.body, '@tackle') &&
+      contains(github.event.comment.body, '/tackle') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     steps:
@@ -97,7 +97,7 @@ Safety, enforced twice (workflow `if:` and again inside the action):
   clear failure. Threads never dangle.
 
 The `respond` action accepts the same provider inputs as the review action
-(`provider`, `model`, `api-key`, prices), plus `trigger` (default `@tackle`)
+(`provider`, `model`, `api-key`, prices), plus `trigger` (default `/tackle`)
 and `budget`.
 
 ## Using other providers

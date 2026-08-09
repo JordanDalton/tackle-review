@@ -36,9 +36,9 @@ inputs:
     required: false
     default: ${{ github.token }}
   trigger:
-    description: 'The mention that activates the action.'
+    description: 'The comment text that activates the action. Slash style by default — "@tackle" would ping the unrelated GitHub user @Tackle on every use.'
     required: false
-    default: '@tackle'
+    default: '/tackle'
   allowed-associations:
     description: 'Comma-separated author_association values allowed to trigger a run.'
     required: false
