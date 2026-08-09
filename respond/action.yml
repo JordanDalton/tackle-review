@@ -1,0 +1,180 @@
+name: 'Tackle Respond'
+description: 'Act on @tackle pull request comments — apply the requested change, push it to the PR branch, and reply in the thread.'
+author: 'Jordan Dalton'
+
+branding:
+  icon: 'message-circle'
+  color: 'green'
+
+inputs:
+  api-key:
+    description: 'API key for the configured provider. Exported as <PROVIDER>_API_KEY.'
+    required: false
+    default: ''
+  provider:
+    description: 'laravel/ai provider name. Defaults to the app''s configured provider.'
+    required: false
+    default: ''
+  model:
+    description: 'Model to use. Defaults to the app''s configured model.'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Anthropic API key shorthand.'
+    required: false
+    default: ''
+  price-input:
+    description: 'Input price per million tokens, for accurate budget enforcement.'
+    required: false
+    default: ''
+  price-output:
+    description: 'Output price per million tokens, for accurate budget enforcement.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token used to fetch context, push the fix commit, and reply. Needs contents: write and pull-requests: write.'
+    required: false
+    default: ${{ github.token }}
+  trigger:
+    description: 'The mention that activates the action.'
+    required: false
+    default: '@tackle'
+  allowed-associations:
+    description: 'Comma-separated author_association values allowed to trigger a run.'
+    required: false
+    default: 'OWNER,MEMBER,COLLABORATOR'
+  budget:
+    description: 'Spend limit in USD for this run.'
+    required: false
+    default: ''
+  php-version:
+    description: 'PHP version to set up.'
+    required: false
+    default: '8.3'
+  working-directory:
+    description: 'Directory containing the Laravel app, for monorepos.'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve the trigger context
+      id: ctx
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        COMMENT_ASSOCIATION: ${{ github.event.comment.author_association }}
+        REVIEW_PR: ${{ github.event.pull_request.number }}
+        ISSUE_PR: ${{ github.event.issue.number }}
+        IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
+        TRIGGER: ${{ inputs.trigger }}
+        ALLOWED: ${{ inputs.allowed-associations }}
+      run: |
+        case "$EVENT_NAME" in
+          pull_request_review_comment)
+            echo "pr=$REVIEW_PR" >> "$GITHUB_OUTPUT"
+            echo "type=review" >> "$GITHUB_OUTPUT"
+            ;;
+          issue_comment)
+            if [ "$IS_PR_COMMENT" != "true" ]; then
+              echo "::error::This comment is on an issue, not a pull request."
+              exit 1
+            fi
+            echo "pr=$ISSUE_PR" >> "$GITHUB_OUTPUT"
+            echo "type=issue" >> "$GITHUB_OUTPUT"
+            ;;
+          *)
+            echo "::error::tackle-review/respond must run on issue_comment or pull_request_review_comment events (got: $EVENT_NAME)."
+            exit 1
+            ;;
+        esac
+
+        case "$COMMENT_BODY" in
+          *"$TRIGGER"*) ;;
+          *)
+            echo "::error::Comment does not mention $TRIGGER. Add an if: guard to the workflow to skip these runs cheaply."
+            exit 1
+            ;;
+        esac
+
+        # Only trusted users may put the agent to work — issue_comment fires
+        # for anyone, including drive-by commenters on public repos.
+        case ",$ALLOWED," in
+          *",$COMMENT_ASSOCIATION,"*) ;;
+          *)
+            echo "::error::Comment author association '$COMMENT_ASSOCIATION' is not in the allowed list ($ALLOWED)."
+            exit 1
+            ;;
+        esac
+
+    - name: Require an API key
+      if: inputs.api-key == '' && inputs.anthropic-api-key == '' && inputs.provider != 'ollama'
+      shell: bash
+      run: |
+        echo "::error::No API key provided. Set api-key (with provider) or anthropic-api-key."
+        exit 1
+
+    - name: Check out the pull request head
+      uses: actions/checkout@v4
+      with:
+        ref: refs/pull/${{ steps.ctx.outputs.pr }}/head
+        fetch-depth: 0
+        token: ${{ inputs.github-token }}
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php-version }}
+        coverage: none
+
+    - name: Install Composer dependencies
+      uses: ramsey/composer-install@v3
+      with:
+        working-directory: ${{ inputs.working-directory }}
+
+    - name: Verify Laravel Tackle is installed
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if ! composer show jordandalton/laravel-tackle >/dev/null 2>&1; then
+          echo "::error::jordandalton/laravel-tackle is not installed in this app. Run: composer require jordandalton/laravel-tackle"
+          exit 1
+        fi
+
+    - name: Run Tackle respond
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ steps.ctx.outputs.pr }}
+        COMMENT_ID: ${{ github.event.comment.id }}
+        COMMENT_TYPE: ${{ steps.ctx.outputs.type }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_PRICE_INPUT: ${{ inputs.price-input }}
+        INPUT_PRICE_OUTPUT: ${{ inputs.price-output }}
+        INPUT_BUDGET: ${{ inputs.budget }}
+      run: |
+        if [ -n "$INPUT_ANTHROPIC_API_KEY" ]; then
+          export ANTHROPIC_API_KEY="$INPUT_ANTHROPIC_API_KEY"
+        fi
+
+        if [ -n "$INPUT_API_KEY" ]; then
+          PROVIDER="${INPUT_PROVIDER:-anthropic}"
+          KEY_VAR="$(echo "$PROVIDER" | tr '[:lower:]-' '[:upper:]_')_API_KEY"
+          export "$KEY_VAR=$INPUT_API_KEY"
+        fi
+
+        if [ -n "$INPUT_PROVIDER" ]; then export AI_CODE_PROVIDER="$INPUT_PROVIDER"; fi
+        if [ -n "$INPUT_MODEL" ]; then export AI_CODE_MODEL="$INPUT_MODEL"; fi
+        if [ -n "$INPUT_PRICE_INPUT" ]; then export AI_CODE_PRICE_INPUT="$INPUT_PRICE_INPUT"; fi
+        if [ -n "$INPUT_PRICE_OUTPUT" ]; then export AI_CODE_PRICE_OUTPUT="$INPUT_PRICE_OUTPUT"; fi
+
+        ARGS=(--pr="$PR_NUMBER" --comment-id="$COMMENT_ID" --comment-type="$COMMENT_TYPE")
+        if [ -n "$INPUT_BUDGET" ]; then ARGS+=(--budget="$INPUT_BUDGET"); fi
+        php artisan ai:respond "${ARGS[@]}"

@@ -54,6 +54,52 @@ Fail the check when serious findings exist:
 Combine with branch protection to require the check before merging. Leave
 `fail-on` unset for a purely advisory review.
 
+## Acting on review comments: `@tackle fix this`
+
+The `respond` sub-action closes the loop. When a maintainer replies to any
+review comment with `@tackle <instruction>`, Tackle applies the change, pushes
+a commit to the PR branch, and replies in the thread. Questions get answered
+in-thread without touching code.
+
+Add `.github/workflows/tackle-respond.yml`:
+
+```yaml
+name: Tackle Respond
+on:
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  respond:
+    if: >
+      contains(github.event.comment.body, '@tackle') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JordanDalton/tackle-review/respond@v1
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Safety, enforced twice (workflow `if:` and again inside the action):
+
+- **Only maintainers can trigger it** — comment `author_association` must be
+  `OWNER`, `MEMBER`, or `COLLABORATOR` (configurable via `allowed-associations`).
+  Comment events fire for *anyone* on public repos; never remove this gate.
+- **Fork PRs are refused** — Tackle never pushes to branches in other repos.
+- **The reply always arrives** — success (with the pushed SHA), no-op, or a
+  clear failure. Threads never dangle.
+
+The `respond` action accepts the same provider inputs as the review action
+(`provider`, `model`, `api-key`, prices), plus `trigger` (default `@tackle`)
+and `budget`.
+
 ## Using other providers
 
 Tackle is built on [`laravel/ai`](https://github.com/laravel/ai) and runs on
