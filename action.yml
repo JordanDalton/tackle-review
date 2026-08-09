@@ -1,5 +1,5 @@
 name: 'Tackle Review'
-description: 'AI code review for Laravel pull requests — inline comments with severity levels, incremental re-reviews, and optional merge gating.'
+description: 'AI code review for Laravel pull requests — inline comments with severity levels, incremental re-reviews, and optional merge gating. Works with any laravel/ai provider.'
 author: 'Jordan Dalton'
 
 branding:
@@ -7,9 +7,30 @@ branding:
   color: 'green'
 
 inputs:
+  api-key:
+    description: 'API key for the configured provider. Exported as <PROVIDER>_API_KEY (e.g. provider: openai → OPENAI_API_KEY). Not needed for local providers like ollama.'
+    required: false
+    default: ''
+  provider:
+    description: 'laravel/ai provider name (anthropic, openai, gemini, groq, ollama, ...). Must match a key in the app''s config/ai.php. Defaults to the app''s configured provider (anthropic out of the box).'
+    required: false
+    default: ''
+  model:
+    description: 'Model to use, e.g. claude-sonnet-4-6 or gpt-5.2. Defaults to the app''s configured model.'
+    required: false
+    default: ''
   anthropic-api-key:
-    description: 'Anthropic API key used by the review agent.'
-    required: true
+    description: 'Anthropic API key. Shorthand for api-key with the default provider; kept for backwards compatibility.'
+    required: false
+    default: ''
+  price-input:
+    description: 'Input price per million tokens, for accurate budget enforcement on non-default models. Set 0 for local models.'
+    required: false
+    default: ''
+  price-output:
+    description: 'Output price per million tokens, for accurate budget enforcement on non-default models. Set 0 for local models.'
+    required: false
+    default: ''
   github-token:
     description: 'Token used to fetch the PR and post the review. Needs pull-requests: write permission to comment.'
     required: false
@@ -49,6 +70,13 @@ runs:
         echo "::error::tackle-review must run on a pull_request event (got: ${{ github.event_name }})."
         exit 1
 
+    - name: Require an API key
+      if: inputs.api-key == '' && inputs.anthropic-api-key == '' && inputs.provider != 'ollama'
+      shell: bash
+      run: |
+        echo "::error::No API key provided. Set api-key (with provider) or anthropic-api-key. Only local providers (ollama) can run without one."
+        exit 1
+
     - name: Check out the pull request
       uses: actions/checkout@v4
 
@@ -76,18 +104,40 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         GITHUB_REPO: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_PRICE_INPUT: ${{ inputs.price-input }}
+        INPUT_PRICE_OUTPUT: ${{ inputs.price-output }}
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_FULL: ${{ inputs.full }}
         INPUT_FOCUS: ${{ inputs.focus }}
       run: |
+        if [ -n "$INPUT_ANTHROPIC_API_KEY" ]; then
+          export ANTHROPIC_API_KEY="$INPUT_ANTHROPIC_API_KEY"
+        fi
+
+        # Route the generic key to the provider's conventional env var:
+        # openai -> OPENAI_API_KEY, gemini -> GEMINI_API_KEY, etc.
+        if [ -n "$INPUT_API_KEY" ]; then
+          PROVIDER="${INPUT_PROVIDER:-anthropic}"
+          KEY_VAR="$(echo "$PROVIDER" | tr '[:lower:]-' '[:upper:]_')_API_KEY"
+          export "$KEY_VAR=$INPUT_API_KEY"
+        fi
+
+        if [ -n "$INPUT_PROVIDER" ]; then export AI_CODE_PROVIDER="$INPUT_PROVIDER"; fi
+        if [ -n "$INPUT_MODEL" ]; then export AI_CODE_MODEL="$INPUT_MODEL"; fi
+        if [ -n "$INPUT_PRICE_INPUT" ]; then export AI_CODE_PRICE_INPUT="$INPUT_PRICE_INPUT"; fi
+        if [ -n "$INPUT_PRICE_OUTPUT" ]; then export AI_CODE_PRICE_OUTPUT="$INPUT_PRICE_OUTPUT"; fi
+
         ARGS=(--pr="$PR_NUMBER")
-        [ "$INPUT_COMMENT" = "true" ] && ARGS+=(--comment)
-        [ -n "$INPUT_FAIL_ON" ] && ARGS+=(--fail-on="$INPUT_FAIL_ON")
-        [ "$INPUT_FULL" = "true" ] && ARGS+=(--full)
-        [ -n "$INPUT_FOCUS" ] && ARGS+=(--focus="$INPUT_FOCUS")
+        if [ "$INPUT_COMMENT" = "true" ]; then ARGS+=(--comment); fi
+        if [ -n "$INPUT_FAIL_ON" ]; then ARGS+=(--fail-on="$INPUT_FAIL_ON"); fi
+        if [ "$INPUT_FULL" = "true" ]; then ARGS+=(--full); fi
+        if [ -n "$INPUT_FOCUS" ]; then ARGS+=(--focus="$INPUT_FOCUS"); fi
         php artisan ai:review "${ARGS[@]}"

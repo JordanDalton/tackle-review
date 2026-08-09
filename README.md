@@ -54,17 +54,43 @@ Fail the check when serious findings exist:
 Combine with branch protection to require the check before merging. Leave
 `fail-on` unset for a purely advisory review.
 
+## Using other providers
+
+Tackle is built on [`laravel/ai`](https://github.com/laravel/ai) and runs on
+any provider it supports with tool calling. Pass `provider`, `model`, and the
+generic `api-key` — it's exported as the provider's conventional env var
+(`openai` → `OPENAI_API_KEY`, `gemini` → `GEMINI_API_KEY`, …):
+
+```yaml
+      - uses: JordanDalton/tackle-review@v1
+        with:
+          provider: openai
+          model: gpt-5.2
+          api-key: ${{ secrets.OPENAI_API_KEY }}
+          price-input: '1.75'    # per-Mtok rates keep the budget cap accurate
+          price-output: '14.00'
+```
+
+The provider must exist in your app's `config/ai.php`. If your provider needs
+env vars beyond a single API key, set them with a job-level `env:` block —
+composite action steps inherit it.
+
 ## Inputs
 
 | Input | Default | Description |
 |---|---|---|
-| `anthropic-api-key` | *(required)* | Anthropic API key for the review agent |
+| `api-key` | *(empty)* | API key, exported as `<PROVIDER>_API_KEY`. Required unless using `anthropic-api-key` or a local provider |
+| `provider` | *(app default)* | `laravel/ai` provider name: `anthropic`, `openai`, `gemini`, `groq`, `ollama`, … |
+| `model` | *(app default)* | Model to use, e.g. `claude-sonnet-4-6`, `gpt-5.2` |
+| `anthropic-api-key` | *(empty)* | Anthropic key shorthand (backwards-compatible) |
+| `price-input` | *(app default)* | Input $/Mtok for budget estimation; `0` for local models |
+| `price-output` | *(app default)* | Output $/Mtok for budget estimation; `0` for local models |
 | `github-token` | `${{ github.token }}` | Token used to fetch the PR and post the review |
 | `comment` | `true` | Post findings as inline PR review comments |
 | `fail-on` | *(empty)* | Fail on findings at or above: `critical` \| `warning` \| `suggestion` |
 | `full` | `false` | Force a full review instead of an incremental follow-up |
 | `focus` | *(empty)* | Comma-separated focus areas, e.g. `security,performance` |
-| `php-version` | `8.3` | PHP version to set up |
+| `php-version` | `8.3` | PHP version to set up — match your app's requirement (Laravel 13 apps typically need `8.4`) |
 | `working-directory` | `.` | Laravel app directory, for monorepos |
 
 ## How it works
@@ -85,7 +111,8 @@ Anthropic key, with a hard per-run budget cap enforced by Tackle.
 ## Requirements
 
 - The repository is a Laravel app with `jordandalton/laravel-tackle` installed
-- An `ANTHROPIC_API_KEY` repository secret
+- An API key secret for your chosen provider (only local providers like Ollama
+  run without one)
 - `permissions: pull-requests: write` in the workflow (to post comments)
 
 ## License
