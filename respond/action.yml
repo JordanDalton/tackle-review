@@ -1,5 +1,5 @@
 name: 'Tackle Respond'
-description: 'Act on @tackle pull request comments — apply the requested change, push it to the PR branch, and reply in the thread.'
+description: 'Act on /tackle pull request comments: apply the requested change, push it to the PR branch, and reply in the thread.'
 author: 'Jordan Dalton'
 
 branding:

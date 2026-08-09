@@ -1,5 +1,5 @@
 name: 'Tackle Review'
-description: 'AI code review for Laravel pull requests — inline comments with severity levels, incremental re-reviews, and optional merge gating. Works with any laravel/ai provider.'
+description: 'AI code review for Laravel pull requests: inline comments, incremental re-reviews, and optional merge gating.'
 author: 'Jordan Dalton'
 
 branding:
