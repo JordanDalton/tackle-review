@@ -1,0 +1,93 @@
+name: 'Tackle Review'
+description: 'AI code review for Laravel pull requests — inline comments with severity levels, incremental re-reviews, and optional merge gating.'
+author: 'Jordan Dalton'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  anthropic-api-key:
+    description: 'Anthropic API key used by the review agent.'
+    required: true
+  github-token:
+    description: 'Token used to fetch the PR and post the review. Needs pull-requests: write permission to comment.'
+    required: false
+    default: ${{ github.token }}
+  comment:
+    description: 'Post the findings to the PR as inline review comments (true/false).'
+    required: false
+    default: 'true'
+  fail-on:
+    description: 'Fail the check when findings at or above this severity exist: critical | warning | suggestion. Leave empty for an advisory review.'
+    required: false
+    default: ''
+  full:
+    description: 'Force a full review even when Tackle has already reviewed this PR (true/false). Default reviews only changes since the last Tackle review.'
+    required: false
+    default: 'false'
+  focus:
+    description: 'Comma-separated focus areas, e.g. "security,performance". Passed to --focus.'
+    required: false
+    default: ''
+  php-version:
+    description: 'PHP version to set up.'
+    required: false
+    default: '8.3'
+  working-directory:
+    description: 'Directory containing the Laravel app, for monorepos.'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Require a pull_request event
+      if: github.event_name != 'pull_request'
+      shell: bash
+      run: |
+        echo "::error::tackle-review must run on a pull_request event (got: ${{ github.event_name }})."
+        exit 1
+
+    - name: Check out the pull request
+      uses: actions/checkout@v4
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php-version }}
+        coverage: none
+
+    - name: Install Composer dependencies
+      uses: ramsey/composer-install@v3
+      with:
+        working-directory: ${{ inputs.working-directory }}
+
+    - name: Verify Laravel Tackle is installed
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if ! composer show jordandalton/laravel-tackle >/dev/null 2>&1; then
+          echo "::error::jordandalton/laravel-tackle is not installed in this app. Run: composer require jordandalton/laravel-tackle"
+          exit 1
+        fi
+
+    - name: Run Tackle review
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FULL: ${{ inputs.full }}
+        INPUT_FOCUS: ${{ inputs.focus }}
+      run: |
+        ARGS=(--pr="$PR_NUMBER")
+        [ "$INPUT_COMMENT" = "true" ] && ARGS+=(--comment)
+        [ -n "$INPUT_FAIL_ON" ] && ARGS+=(--fail-on="$INPUT_FAIL_ON")
+        [ "$INPUT_FULL" = "true" ] && ARGS+=(--full)
+        [ -n "$INPUT_FOCUS" ] && ARGS+=(--focus="$INPUT_FOCUS")
+        php artisan ai:review "${ARGS[@]}"
