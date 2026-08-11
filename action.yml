@@ -59,15 +59,56 @@ inputs:
     description: 'Directory containing the Laravel app, for monorepos.'
     required: false
     default: '.'
+  pr-number:
+    description: 'Pull request number to operate on. When set, the action runs in dispatch mode: it checks out refs/pull/<pr-number>/head instead of relying on a pull_request event (for repository_dispatch triggers, e.g. Tackle Cloud).'
+    required: false
+    default: ''
+  run-type:
+    description: 'What to run: review (default) runs ai:review; task runs ai:run with the given task prompt.'
+    required: false
+    default: 'review'
+  task:
+    description: 'Task prompt for run-type: task. Passed to php artisan ai:run.'
+    required: false
+    default: ''
+  budget:
+    description: 'Spend limit in USD, passed as --budget on task runs.'
+    required: false
+    default: ''
+  report-url:
+    description: 'URL to POST the JSON result (tackle-result.json) to after the run, e.g. a Tackle Cloud ingest endpoint. Reporting is skipped when empty.'
+    required: false
+    default: ''
+  report-token:
+    description: 'Bearer token sent in the Authorization header when posting the result to report-url.'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
   steps:
-    - name: Require a pull_request event
-      if: github.event_name != 'pull_request'
+    # Best-effort log hygiene: the ingest token also appears in the
+    # repository_dispatch client_payload (visible to repo readers), so this
+    # only reduces incidental exposure in later step logs.
+    - name: Mask the report token
+      if: inputs.report-token != ''
+      shell: bash
+      env:
+        REPORT_TOKEN: ${{ inputs.report-token }}
+      run: echo "::add-mask::$REPORT_TOKEN"
+
+    - name: Require a pull_request event or an explicit pr-number
+      if: github.event_name != 'pull_request' && inputs.pr-number == ''
       shell: bash
       run: |
-        echo "::error::tackle-review must run on a pull_request event (got: ${{ github.event_name }})."
+        echo "::error::tackle-review must run on a pull_request event, or be given an explicit pr-number for dispatch triggers (got event: ${{ github.event_name }})."
+        exit 1
+
+    - name: Require a task prompt for task runs
+      if: inputs.run-type == 'task' && inputs.task == ''
+      shell: bash
+      run: |
+        echo "::error::run-type is 'task' but no task prompt was provided. Set the task input."
         exit 1
 
     - name: Require an API key
@@ -78,7 +119,15 @@ runs:
         exit 1
 
     - name: Check out the pull request
+      if: inputs.pr-number == ''
       uses: actions/checkout@v4
+
+    - name: Check out the pull request head (dispatch mode)
+      if: inputs.pr-number != ''
+      uses: actions/checkout@v4
+      with:
+        ref: refs/pull/${{ inputs.pr-number }}/head
+        fetch-depth: 0
 
     - name: Set up PHP
       uses: shivammathur/setup-php@v2
@@ -100,13 +149,18 @@ runs:
           exit 1
         fi
 
-    - name: Run Tackle review
+    - name: Run Tackle
+      id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         GITHUB_REPO: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_RUN_TYPE: ${{ inputs.run-type }}
+        INPUT_TASK: ${{ inputs.task }}
+        INPUT_BUDGET: ${{ inputs.budget }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_PROVIDER: ${{ inputs.provider }}
@@ -135,9 +189,54 @@ runs:
         if [ -n "$INPUT_PRICE_INPUT" ]; then export AI_CODE_PRICE_INPUT="$INPUT_PRICE_INPUT"; fi
         if [ -n "$INPUT_PRICE_OUTPUT" ]; then export AI_CODE_PRICE_OUTPUT="$INPUT_PRICE_OUTPUT"; fi
 
-        ARGS=(--pr="$PR_NUMBER")
-        if [ "$INPUT_COMMENT" = "true" ]; then ARGS+=(--comment); fi
-        if [ -n "$INPUT_FAIL_ON" ]; then ARGS+=(--fail-on="$INPUT_FAIL_ON"); fi
-        if [ "$INPUT_FULL" = "true" ]; then ARGS+=(--full); fi
-        if [ -n "$INPUT_FOCUS" ]; then ARGS+=(--focus="$INPUT_FOCUS"); fi
-        php artisan ai:review "${ARGS[@]}"
+        # An explicit pr-number (dispatch mode) wins over the event context.
+        PR_NUMBER="${INPUT_PR_NUMBER:-$EVENT_PR_NUMBER}"
+        export PR_NUMBER
+
+        if [ "$INPUT_RUN_TYPE" = "task" ]; then
+          CMD=(ai:run "$INPUT_TASK" --output=json --allowlist)
+          if [ -n "$INPUT_BUDGET" ]; then CMD+=(--budget="$INPUT_BUDGET"); fi
+        else
+          CMD=(ai:review --pr="$PR_NUMBER" --output=json)
+          if [ "$INPUT_COMMENT" = "true" ]; then CMD+=(--comment); fi
+          if [ -n "$INPUT_FAIL_ON" ]; then CMD+=(--fail-on="$INPUT_FAIL_ON"); fi
+          if [ "$INPUT_FULL" = "true" ]; then CMD+=(--full); fi
+          if [ -n "$INPUT_FOCUS" ]; then CMD+=(--focus="$INPUT_FOCUS"); fi
+        fi
+
+        # In JSON mode the machine-readable result goes to stdout and human
+        # diagnostics go to stderr. Capture the exit code without failing the
+        # step; it is re-raised after the result has been reported.
+        set +e
+        php artisan "${CMD[@]}" > "$RUNNER_TEMP/tackle-result.json"
+        EXIT_CODE=$?
+        set -e
+        echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "Tackle finished with exit code $EXIT_CODE (result in tackle-result.json)."
+
+    - name: Report the result
+      if: always() && inputs.report-url != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        REPORT_URL: ${{ inputs.report-url }}
+        REPORT_TOKEN: ${{ inputs.report-token }}
+      run: |
+        if [ -s "$RUNNER_TEMP/tackle-result.json" ]; then
+          DATA=(--data-binary "@$RUNNER_TEMP/tackle-result.json")
+        else
+          echo "::warning::tackle-result.json is missing or empty; reporting an error result."
+          DATA=(--data '{"ok":false,"outcome":"error","error":"no result produced"}')
+        fi
+        if ! curl -sS --max-time 30 -X POST \
+          -H "Authorization: Bearer $REPORT_TOKEN" \
+          -H "Content-Type: application/json" \
+          "${DATA[@]}" "$REPORT_URL"; then
+          echo "::warning::Failed to POST the result to report-url (the run outcome is unaffected)."
+        fi
+
+    - name: Propagate the run exit code
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+      run: exit "${EXIT_CODE:-1}"
