@@ -219,7 +219,8 @@ runs:
           # given APP_ENV so Tackle's environment-keyed allowlists (make:*,
           # migrate:*, ...) permit code generation. Defaults to local.
           export APP_ENV="${INPUT_APP_ENV:-local}"
-          CMD=(ai:run "$INPUT_TASK" --output=json --allowlist)
+          # --yes: headless CI has no one to answer confirmation prompts.
+          CMD=(ai:run "$INPUT_TASK" --output=json --allowlist --yes)
           if [ -n "$INPUT_BUDGET" ]; then CMD+=(--budget="$INPUT_BUDGET"); fi
         else
           CMD=(ai:review --pr="$PR_NUMBER" --output=json)
@@ -238,6 +239,37 @@ runs:
         set -e
         echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
         echo "Tackle finished with exit code $EXIT_CODE (result in tackle-result.json)."
+
+        # Safety net: the checkout is destroyed when the job ends, so any
+        # task work left uncommitted would be lost. Commit, push, and open a
+        # PR deterministically, then record its URL in the result document.
+        if [ "$INPUT_RUN_TYPE" = "task" ] && [ "$EXIT_CODE" -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
+          EXISTING_PR_URL="$(jq -r '.pr_url // empty' "$RUNNER_TEMP/tackle-result.json" 2>/dev/null || true)"
+          if [ -z "$EXISTING_PR_URL" ]; then
+            BRANCH="tackle/task-${GITHUB_RUN_ID:-manual}"
+            TITLE="$(echo "$INPUT_TASK" | head -c 60 | tr '\n' ' ')"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$BRANCH"
+            git add -A
+            git commit -m "Tackle task: $TITLE"
+            git push origin "$BRANCH"
+            PR_URL="$(jq -n --arg t "Tackle task: $TITLE" --arg h "$BRANCH" --arg b "$GITHUB_REF_NAME" --arg body "$INPUT_TASK" \
+              '{title: $t, head: $h, base: $b, body: ("Automated task run.\n\n> " + $body)}' \
+              | curl -sS -X POST \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  --data @- "https://api.github.com/repos/$GITHUB_REPO/pulls" \
+              | jq -r '.html_url // empty')"
+            if [ -n "$PR_URL" ]; then
+              echo "Opened $PR_URL for the task changes."
+              jq --arg u "$PR_URL" '.pr_url = $u' "$RUNNER_TEMP/tackle-result.json" > "$RUNNER_TEMP/tackle-result.tmp" \
+                && mv "$RUNNER_TEMP/tackle-result.tmp" "$RUNNER_TEMP/tackle-result.json"
+            else
+              echo "::warning::Could not open a PR for the uncommitted task changes."
+            fi
+          fi
+        fi
 
     - name: Report the result
       if: always() && inputs.report-url != ''
