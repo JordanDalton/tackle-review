@@ -98,12 +98,15 @@ runs:
       run: echo "::add-mask::$REPORT_TOKEN"
 
     - name: Report the run start
-      if: inputs.report-started-url != ''
+      if: inputs.report-started-url != '' || inputs.report-url != ''
       shell: bash
       env:
         STARTED_URL: ${{ inputs.report-started-url }}
+        REPORT_URL: ${{ inputs.report-url }}
         REPORT_TOKEN: ${{ inputs.report-token }}
       run: |
+        # Derive from the result URL when not given explicitly.
+        STARTED_URL="${STARTED_URL:-${REPORT_URL%/result}/started}"
         curl -sS --max-time 15 -X POST \
           -H "Authorization: Bearer $REPORT_TOKEN" \
           "$STARTED_URL" >/dev/null \
@@ -230,6 +233,7 @@ runs:
         INPUT_PRICE_OUTPUT: ${{ inputs.price-output }}
         INPUT_BUDGET: ${{ inputs.budget }}
         REPORT_PROGRESS_URL: ${{ inputs.report-progress-url }}
+        REPORT_URL_FOR_DERIVE: ${{ inputs.report-url }}
         REPORT_TOKEN: ${{ inputs.report-token }}
       run: |
         if [ -n "$INPUT_ANTHROPIC_API_KEY" ]; then
@@ -256,6 +260,7 @@ runs:
         PROGRESS_LOG="$RUNNER_TEMP/tackle-progress.log"
         : > "$PROGRESS_LOG"
         PROGRESS_PID=""
+        REPORT_PROGRESS_URL="${REPORT_PROGRESS_URL:-${REPORT_URL_FOR_DERIVE:+${REPORT_URL_FOR_DERIVE%/result}/progress}}"
         if [ -n "$REPORT_PROGRESS_URL" ] && [ -n "$REPORT_TOKEN" ]; then
           (
             while sleep 4; do
