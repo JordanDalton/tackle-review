@@ -87,6 +87,16 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # Best-effort log hygiene: the ingest token also appears in the
+    # repository_dispatch client_payload (visible to repo readers), so this
+    # only reduces incidental exposure in later step logs.
+    - name: Mask the report token
+      if: inputs.report-token != ''
+      shell: bash
+      env:
+        REPORT_TOKEN: ${{ inputs.report-token }}
+      run: echo "::add-mask::$REPORT_TOKEN"
+
     - name: Require a pull_request event or an explicit pr-number
       if: github.event_name != 'pull_request' && inputs.pr-number == ''
       shell: bash

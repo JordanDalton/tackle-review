@@ -35,6 +35,18 @@ inputs:
     description: 'Token used to fetch context, push the fix commit, and reply. Needs contents: write and pull-requests: write.'
     required: false
     default: ${{ github.token }}
+  pr-number:
+    description: 'Pull request number. When set (e.g. from a repository_dispatch payload), the event-based trigger checks are skipped — the dispatcher is expected to have validated the comment already.'
+    required: false
+    default: ''
+  comment-id:
+    description: 'ID of the comment to act on. Required in dispatch mode (when pr-number is set).'
+    required: false
+    default: ''
+  comment-type:
+    description: 'Comment type in dispatch mode: issue (conversation comment) or review (diff comment).'
+    required: false
+    default: 'issue'
   trigger:
     description: 'The comment text that activates the action. Slash style by default — "@tackle" would ping the unrelated GitHub user @Tackle on every use.'
     required: false
@@ -67,6 +79,16 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # Best-effort log hygiene: the ingest token also appears in the
+    # repository_dispatch client_payload (visible to repo readers), so this
+    # only reduces incidental exposure in later step logs.
+    - name: Mask the report token
+      if: inputs.report-token != ''
+      shell: bash
+      env:
+        REPORT_TOKEN: ${{ inputs.report-token }}
+      run: echo "::add-mask::$REPORT_TOKEN"
+
     - name: Resolve the trigger context
       id: ctx
       shell: bash
@@ -77,9 +99,28 @@ runs:
         REVIEW_PR: ${{ github.event.pull_request.number }}
         ISSUE_PR: ${{ github.event.issue.number }}
         IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
+        EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_COMMENT_ID: ${{ inputs.comment-id }}
+        INPUT_COMMENT_TYPE: ${{ inputs.comment-type }}
         TRIGGER: ${{ inputs.trigger }}
         ALLOWED: ${{ inputs.allowed-associations }}
       run: |
+        # Dispatch mode: the caller supplies the context explicitly and has
+        # already validated the trigger string and author association.
+        if [ -n "$INPUT_PR_NUMBER" ]; then
+          if [ -z "$INPUT_COMMENT_ID" ]; then
+            echo "::error::comment-id is required when pr-number is provided."
+            exit 1
+          fi
+          echo "pr=$INPUT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "type=${INPUT_COMMENT_TYPE:-issue}" >> "$GITHUB_OUTPUT"
+          echo "comment-id=$INPUT_COMMENT_ID" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "comment-id=$EVENT_COMMENT_ID" >> "$GITHUB_OUTPUT"
+
         case "$EVENT_NAME" in
           pull_request_review_comment)
             echo "pr=$REVIEW_PR" >> "$GITHUB_OUTPUT"
@@ -159,7 +200,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         GITHUB_REPO: ${{ github.repository }}
         PR_NUMBER: ${{ steps.ctx.outputs.pr }}
-        COMMENT_ID: ${{ github.event.comment.id }}
+        COMMENT_ID: ${{ steps.ctx.outputs.comment-id }}
         COMMENT_TYPE: ${{ steps.ctx.outputs.type }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
