@@ -114,10 +114,10 @@ runs:
           || echo "::warning::Failed to POST the started ping (the run is unaffected)."
 
     - name: Require a pull_request event or an explicit pr-number
-      if: github.event_name != 'pull_request' && inputs.pr-number == ''
+      if: github.event_name != 'pull_request' && inputs.pr-number == '' && inputs.run-type != 'task'
       shell: bash
       run: |
-        echo "::error::tackle-review must run on a pull_request event, or be given an explicit pr-number for dispatch triggers (got event: ${{ github.event_name }})."
+        echo "::error::tackle-review reviews need a pull_request event or an explicit pr-number; task runs (run-type: task) need neither (got event: ${{ github.event_name }})."
         exit 1
 
     - name: Require a task prompt for task runs
