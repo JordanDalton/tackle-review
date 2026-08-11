@@ -208,7 +208,7 @@ runs:
         # diagnostics go to stderr. Capture the exit code without failing the
         # step; it is re-raised after the result has been reported.
         set +e
-        php artisan "${CMD[@]}" > tackle-result.json
+        php artisan "${CMD[@]}" > "$RUNNER_TEMP/tackle-result.json"
         EXIT_CODE=$?
         set -e
         echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -222,8 +222,8 @@ runs:
         REPORT_URL: ${{ inputs.report-url }}
         REPORT_TOKEN: ${{ inputs.report-token }}
       run: |
-        if [ -s tackle-result.json ]; then
-          DATA=(--data-binary '@tackle-result.json')
+        if [ -s "$RUNNER_TEMP/tackle-result.json" ]; then
+          DATA=(--data-binary "@$RUNNER_TEMP/tackle-result.json")
         else
           echo "::warning::tackle-result.json is missing or empty; reporting an error result."
           DATA=(--data '{"ok":false,"outcome":"error","error":"no result produced"}')
