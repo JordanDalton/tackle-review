@@ -79,6 +79,10 @@ inputs:
     description: 'URL to POST the JSON result (tackle-result.json) to after the run, e.g. a Tackle Cloud ingest endpoint. Reporting is skipped when empty.'
     required: false
     default: ''
+  report-started-url:
+    description: 'URL to POST an empty "run started" ping to before the run begins (e.g. a Tackle Cloud status endpoint). Skipped when empty.'
+    required: false
+    default: ''
   report-token:
     description: 'Bearer token sent in the Authorization header when posting the result to report-url.'
     required: false
@@ -96,6 +100,18 @@ runs:
       env:
         REPORT_TOKEN: ${{ inputs.report-token }}
       run: echo "::add-mask::$REPORT_TOKEN"
+
+    - name: Report the run start
+      if: inputs.report-started-url != ''
+      shell: bash
+      env:
+        STARTED_URL: ${{ inputs.report-started-url }}
+        REPORT_TOKEN: ${{ inputs.report-token }}
+      run: |
+        curl -sS --max-time 15 -X POST \
+          -H "Authorization: Bearer $REPORT_TOKEN" \
+          "$STARTED_URL" >/dev/null \
+          || echo "::warning::Failed to POST the started ping (the run is unaffected)."
 
     - name: Require a pull_request event or an explicit pr-number
       if: github.event_name != 'pull_request' && inputs.pr-number == ''
