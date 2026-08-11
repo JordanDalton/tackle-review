@@ -55,6 +55,14 @@ inputs:
     description: 'Directory containing the Laravel app, for monorepos.'
     required: false
     default: '.'
+  report-url:
+    description: 'URL to POST the JSON result (tackle-result.json) to after the run, e.g. a Tackle Cloud ingest endpoint. Reporting is skipped when empty.'
+    required: false
+    default: ''
+  report-token:
+    description: 'Bearer token sent in the Authorization header when posting the result to report-url.'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -144,6 +152,7 @@ runs:
         fi
 
     - name: Run Tackle respond
+      id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -175,6 +184,42 @@ runs:
         if [ -n "$INPUT_PRICE_INPUT" ]; then export AI_CODE_PRICE_INPUT="$INPUT_PRICE_INPUT"; fi
         if [ -n "$INPUT_PRICE_OUTPUT" ]; then export AI_CODE_PRICE_OUTPUT="$INPUT_PRICE_OUTPUT"; fi
 
-        ARGS=(--pr="$PR_NUMBER" --comment-id="$COMMENT_ID" --comment-type="$COMMENT_TYPE")
+        ARGS=(--pr="$PR_NUMBER" --comment-id="$COMMENT_ID" --comment-type="$COMMENT_TYPE" --output=json)
         if [ -n "$INPUT_BUDGET" ]; then ARGS+=(--budget="$INPUT_BUDGET"); fi
-        php artisan ai:respond "${ARGS[@]}"
+
+        # In JSON mode the machine-readable result goes to stdout and human
+        # diagnostics go to stderr. Capture the exit code without failing the
+        # step; it is re-raised after the result has been reported.
+        set +e
+        php artisan ai:respond "${ARGS[@]}" > tackle-result.json
+        EXIT_CODE=$?
+        set -e
+        echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "Tackle finished with exit code $EXIT_CODE (result in tackle-result.json)."
+
+    - name: Report the result
+      if: always() && inputs.report-url != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        REPORT_URL: ${{ inputs.report-url }}
+        REPORT_TOKEN: ${{ inputs.report-token }}
+      run: |
+        if [ -s tackle-result.json ]; then
+          DATA=(--data-binary '@tackle-result.json')
+        else
+          echo "::warning::tackle-result.json is missing or empty; reporting an error result."
+          DATA=(--data '{"ok":false,"outcome":"error","error":"no result produced"}')
+        fi
+        if ! curl -sS --max-time 30 -X POST \
+          -H "Authorization: Bearer $REPORT_TOKEN" \
+          -H "Content-Type: application/json" \
+          "${DATA[@]}" "$REPORT_URL"; then
+          echo "::warning::Failed to POST the result to report-url (the run outcome is unaffected)."
+        fi
+
+    - name: Propagate the run exit code
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+      run: exit "${EXIT_CODE:-1}"

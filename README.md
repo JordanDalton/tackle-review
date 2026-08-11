@@ -138,6 +138,67 @@ composite action steps inherit it.
 | `focus` | *(empty)* | Comma-separated focus areas, e.g. `security,performance` |
 | `php-version` | `8.3` | PHP version to set up — match your app's requirement (Laravel 13 apps typically need `8.4`) |
 | `working-directory` | `.` | Laravel app directory, for monorepos |
+| `pr-number` | *(from event)* | Explicit PR number for dispatch mode — checks out `refs/pull/<n>/head` instead of relying on a `pull_request` event |
+| `run-type` | `review` | `review` runs `ai:review`; `task` runs `ai:run` with the `task` prompt |
+| `task` | *(empty)* | Task prompt for `run-type: task` |
+| `budget` | *(app default)* | Spend limit in USD, passed as `--budget` on task runs |
+| `report-url` | *(empty)* | URL to POST the JSON run result to when the run finishes (see Tackle Cloud below) |
+| `report-token` | *(empty)* | Bearer token for the `Authorization` header when posting to `report-url` |
+
+The `respond` sub-action also accepts `report-url` / `report-token` and reports
+its result the same way.
+
+## Tackle Cloud / repository_dispatch
+
+The action can also be driven remotely — e.g. by Tackle Cloud, a control plane
+that triggers runs via `repository_dispatch` and collects the results. In this mode the PR number, run type, and reporting endpoint arrive in
+the event's `client_payload` instead of a `pull_request` event:
+
+```yaml
+name: Tackle Cloud
+on:
+  repository_dispatch:
+    types: [tackle-run]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  tackle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JordanDalton/tackle-review@v1
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          pr-number: ${{ github.event.client_payload.pr_number }}
+          run-type: ${{ github.event.client_payload.type }}
+          task: ${{ github.event.client_payload.task }}
+          fail-on: ${{ github.event.client_payload.fail_on }}
+          focus: ${{ github.event.client_payload.focus }}
+          full: ${{ github.event.client_payload.full }}
+          budget: ${{ github.event.client_payload.budget }}
+          report-url: ${{ github.event.client_payload.ingest_url }}
+          report-token: ${{ github.event.client_payload.ingest_token }}
+```
+
+How dispatch mode differs from the normal `pull_request` flow:
+
+- **`pr-number` replaces the event context.** The action checks out
+  `refs/pull/<pr-number>/head` (full history) and reviews that PR, so it works
+  from any event type.
+- **`run-type` selects the command.** `review` (the default) runs `ai:review`;
+  `task` runs `php artisan ai:run "<task>" --output=json --allowlist`
+  with the optional `--budget` cap — an autonomous task run instead of a review.
+- **Results are reported back.** The command runs in JSON mode and writes its
+  result to `tackle-result.json`; when `report-url` is set the file is POSTed
+  there with `Authorization: Bearer <report-token>` after the run — even when
+  the run fails. If no result was produced, an error stub
+  (`{"ok":false,"outcome":"error","error":"no result produced"}`) is sent
+  instead. A failed POST only logs a warning; it never fails the workflow.
+- **The check-run verdict is preserved.** The action exits with the command's
+  original exit code after reporting, so `fail-on` gating still marks the
+  check red.
 
 ## How it works
 
