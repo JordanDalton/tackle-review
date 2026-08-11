@@ -254,19 +254,20 @@ runs:
             git add -A
             git commit -m "Tackle task: $TITLE"
             git push origin "$BRANCH"
-            PR_URL="$(jq -n --arg t "Tackle task: $TITLE" --arg h "$BRANCH" --arg b "$GITHUB_REF_NAME" --arg body "$INPUT_TASK" \
+            RESPONSE="$(jq -n --arg t "Tackle task: $TITLE" --arg h "$BRANCH" --arg b "$GITHUB_REF_NAME" --arg body "$INPUT_TASK" \
               '{title: $t, head: $h, base: $b, body: ("Automated task run.\n\n> " + $body)}' \
               | curl -sS -X POST \
                   -H "Authorization: Bearer $GITHUB_TOKEN" \
                   -H "Content-Type: application/json" \
-                  --data @- "https://api.github.com/repos/$GITHUB_REPO/pulls" \
-              | jq -r '.html_url // empty')"
+                  --data @- "https://api.github.com/repos/$GITHUB_REPO/pulls")"
+            PR_URL="$(echo "$RESPONSE" | jq -r '.html_url // empty')"
             if [ -n "$PR_URL" ]; then
               echo "Opened $PR_URL for the task changes."
               jq --arg u "$PR_URL" '.pr_url = $u' "$RUNNER_TEMP/tackle-result.json" > "$RUNNER_TEMP/tackle-result.tmp" \
                 && mv "$RUNNER_TEMP/tackle-result.tmp" "$RUNNER_TEMP/tackle-result.json"
             else
-              echo "::warning::Could not open a PR for the uncommitted task changes."
+              MESSAGE="$(echo "$RESPONSE" | jq -r '.message // "unknown error"')"
+              echo "::warning::Pushed $BRANCH but could not open a PR: $MESSAGE. If GitHub Actions may not create pull requests here, enable it under Settings -> Actions -> General -> Workflow permissions."
             fi
           fi
         fi
