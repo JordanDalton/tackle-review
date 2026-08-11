@@ -87,6 +87,10 @@ inputs:
     description: 'URL to POST an empty "run started" ping to before the run begins (e.g. a Tackle Cloud status endpoint). Skipped when empty.'
     required: false
     default: ''
+  report-progress-url:
+    description: 'URL to POST the agent''s accumulated diagnostic output to every few seconds while it works (e.g. a Tackle Cloud progress endpoint). Skipped when empty.'
+    required: false
+    default: ''
   report-token:
     description: 'Bearer token sent in the Authorization header when posting the result to report-url.'
     required: false
@@ -192,6 +196,8 @@ runs:
         INPUT_FULL: ${{ inputs.full }}
         INPUT_FOCUS: ${{ inputs.focus }}
         INPUT_APP_ENV: ${{ inputs.app-env }}
+        REPORT_PROGRESS_URL: ${{ inputs.report-progress-url }}
+        REPORT_TOKEN: ${{ inputs.report-token }}
       run: |
         if [ -n "$INPUT_ANTHROPIC_API_KEY" ]; then
           export ANTHROPIC_API_KEY="$INPUT_ANTHROPIC_API_KEY"
@@ -219,6 +225,9 @@ runs:
           # given APP_ENV so Tackle's environment-keyed allowlists (make:*,
           # migrate:*, ...) permit code generation. Defaults to local.
           export APP_ENV="${INPUT_APP_ENV:-local}"
+          # Give the agent a git identity so it can commit and open PRs itself.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # --yes: headless CI has no one to answer confirmation prompts.
           CMD=(ai:run "$INPUT_TASK" --output=json --allowlist --yes)
           if [ -n "$INPUT_BUDGET" ]; then CMD+=(--budget="$INPUT_BUDGET"); fi
@@ -233,10 +242,28 @@ runs:
         # In JSON mode the machine-readable result goes to stdout and human
         # diagnostics go to stderr. Capture the exit code without failing the
         # step; it is re-raised after the result has been reported.
+        # Stream the agent's diagnostic output to the dispatcher while it works.
+        PROGRESS_LOG="$RUNNER_TEMP/tackle-progress.log"
+        : > "$PROGRESS_LOG"
+        PROGRESS_PID=""
+        if [ -n "$REPORT_PROGRESS_URL" ] && [ -n "$REPORT_TOKEN" ]; then
+          (
+            while sleep 4; do
+              [ -s "$PROGRESS_LOG" ] || continue
+              curl -sS --max-time 10 -X POST \
+                -H "Authorization: Bearer $REPORT_TOKEN" \
+                -H "Content-Type: text/plain" \
+                --data-binary @"$PROGRESS_LOG" "$REPORT_PROGRESS_URL" >/dev/null 2>&1 || true
+            done
+          ) &
+          PROGRESS_PID=$!
+        fi
+
         set +e
-        php artisan "${CMD[@]}" > "$RUNNER_TEMP/tackle-result.json"
+        php artisan "${CMD[@]}" > "$RUNNER_TEMP/tackle-result.json" 2> >(tee -a "$PROGRESS_LOG" >&2)
         EXIT_CODE=$?
         set -e
+        if [ -n "$PROGRESS_PID" ]; then kill "$PROGRESS_PID" 2>/dev/null || true; fi
         echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
         echo "Tackle finished with exit code $EXIT_CODE (result in tackle-result.json)."
 

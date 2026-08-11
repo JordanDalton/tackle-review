@@ -75,6 +75,10 @@ inputs:
     description: 'URL to POST an empty "run started" ping to before the run begins (e.g. a Tackle Cloud status endpoint). Skipped when empty.'
     required: false
     default: ''
+  report-progress-url:
+    description: 'URL to POST the agent''s accumulated diagnostic output to every few seconds while it works (e.g. a Tackle Cloud progress endpoint). Skipped when empty.'
+    required: false
+    default: ''
   report-token:
     description: 'Bearer token sent in the Authorization header when posting the result to report-url.'
     required: false
@@ -225,6 +229,8 @@ runs:
         INPUT_PRICE_INPUT: ${{ inputs.price-input }}
         INPUT_PRICE_OUTPUT: ${{ inputs.price-output }}
         INPUT_BUDGET: ${{ inputs.budget }}
+        REPORT_PROGRESS_URL: ${{ inputs.report-progress-url }}
+        REPORT_TOKEN: ${{ inputs.report-token }}
       run: |
         if [ -n "$INPUT_ANTHROPIC_API_KEY" ]; then
           export ANTHROPIC_API_KEY="$INPUT_ANTHROPIC_API_KEY"
@@ -247,10 +253,27 @@ runs:
         # In JSON mode the machine-readable result goes to stdout and human
         # diagnostics go to stderr. Capture the exit code without failing the
         # step; it is re-raised after the result has been reported.
+        PROGRESS_LOG="$RUNNER_TEMP/tackle-progress.log"
+        : > "$PROGRESS_LOG"
+        PROGRESS_PID=""
+        if [ -n "$REPORT_PROGRESS_URL" ] && [ -n "$REPORT_TOKEN" ]; then
+          (
+            while sleep 4; do
+              [ -s "$PROGRESS_LOG" ] || continue
+              curl -sS --max-time 10 -X POST \
+                -H "Authorization: Bearer $REPORT_TOKEN" \
+                -H "Content-Type: text/plain" \
+                --data-binary @"$PROGRESS_LOG" "$REPORT_PROGRESS_URL" >/dev/null 2>&1 || true
+            done
+          ) &
+          PROGRESS_PID=$!
+        fi
+
         set +e
-        php artisan ai:respond "${ARGS[@]}" > "$RUNNER_TEMP/tackle-result.json"
+        php artisan ai:respond "${ARGS[@]}" > "$RUNNER_TEMP/tackle-result.json" 2> >(tee -a "$PROGRESS_LOG" >&2)
         EXIT_CODE=$?
         set -e
+        if [ -n "$PROGRESS_PID" ]; then kill "$PROGRESS_PID" 2>/dev/null || true; fi
         echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
         echo "Tackle finished with exit code $EXIT_CODE (result in tackle-result.json)."
 
