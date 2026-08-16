@@ -87,6 +87,10 @@ inputs:
     description: 'Tool-call ceiling for upgrade runs, passed as --max-steps. Defaults to the UpgradeAgent''s own limit; the agent''s #[MaxSteps] attribute is a hard upper bound regardless.'
     required: false
     default: ''
+  prepare:
+    description: 'Shell commands run before the agent starts, for task and upgrade runs only — app-specific environment prep the agent should not spend its step budget on (e.g. "npm ci && npm run build"). A .env with a generated APP_KEY is provisioned automatically before this runs.'
+    required: false
+    default: ''
   app-env:
     description: 'APP_ENV for task and upgrade runs. Controls Tackle''s environment-keyed safety allowlists; the CI checkout is disposable, so local is the default.'
     required: false
@@ -220,6 +224,7 @@ runs:
         INPUT_REF_ISSUE: ${{ inputs.ref-issue }}
         INPUT_BUDGET: ${{ inputs.budget }}
         INPUT_MAX_STEPS: ${{ inputs.max-steps }}
+        INPUT_PREPARE: ${{ inputs.prepare }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_PROVIDER: ${{ inputs.provider }}
@@ -255,6 +260,22 @@ runs:
         # An explicit pr-number (dispatch mode) wins over the event context.
         PR_NUMBER="${INPUT_PR_NUMBER:-$EVENT_PR_NUMBER}"
         export PR_NUMBER
+
+        # Task and upgrade runs execute the app's test suite, so give them a
+        # bootable app the way the app's own CI would — the agent should not
+        # spend its step budget provisioning an environment. (Learned from the
+        # ai:upgrade maiden flight, which burned half its steps on a missing
+        # APP_KEY and unbuilt assets.)
+        if [ "$INPUT_RUN_TYPE" = "task" ] || [ "$INPUT_RUN_TYPE" = "upgrade" ]; then
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+            php artisan key:generate --force >/dev/null || echo "::warning::key:generate failed — tests needing APP_KEY may not run."
+          fi
+          if [ -n "$INPUT_PREPARE" ]; then
+            echo "Running prepare commands..."
+            bash -e -c "$INPUT_PREPARE"
+          fi
+        fi
 
         if [ "$INPUT_RUN_TYPE" = "task" ]; then
           # The CI checkout is a disposable sandbox: run task work under the
