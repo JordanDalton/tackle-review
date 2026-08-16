@@ -153,6 +153,13 @@ others can open issues in. Only a maintainer action — a label they applied —
 should hand an agent write access. The workflow's `if:` enforces that, and
 `concurrency` stops two labels from racing.
 
+**CI on agent-opened PRs:** GitHub's recursion guard means pull requests
+created with the workflow's default `GITHUB_TOKEN` do **not** trigger
+`pull_request` workflows — the upgrade PR arrives with no test run and no
+Tackle review attached. The in-session verification still ran, but if you want
+your normal PR checks too, pass a fine-grained PAT (or GitHub App token) with
+`contents: write` + `pull-requests: write` as `github-token` instead.
+
 Safety posture, inherited from `ai:upgrade --headless`: composer lifecycle
 scripts can never run (enabling them requires an interactive approval that
 headless mode cannot give), the budget applies per package, and nothing lands
