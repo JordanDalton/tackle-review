@@ -83,6 +83,10 @@ inputs:
     description: 'Spend limit in USD, passed as --budget on task and upgrade runs (per package for upgrades).'
     required: false
     default: ''
+  max-steps:
+    description: 'Tool-call ceiling for upgrade runs, passed as --max-steps. Defaults to the UpgradeAgent''s own limit; the agent''s #[MaxSteps] attribute is a hard upper bound regardless.'
+    required: false
+    default: ''
   app-env:
     description: 'APP_ENV for task and upgrade runs. Controls Tackle''s environment-keyed safety allowlists; the CI checkout is disposable, so local is the default.'
     required: false
@@ -215,6 +219,7 @@ runs:
         INPUT_PACKAGES: ${{ inputs.packages }}
         INPUT_REF_ISSUE: ${{ inputs.ref-issue }}
         INPUT_BUDGET: ${{ inputs.budget }}
+        INPUT_MAX_STEPS: ${{ inputs.max-steps }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_PROVIDER: ${{ inputs.provider }}
@@ -275,6 +280,7 @@ runs:
           CMD=(ai:upgrade "${PACKAGES[@]}" --headless --output=json --no-worktree --allowlist)
           if [ -n "$INPUT_BUDGET" ]; then CMD+=(--budget="$INPUT_BUDGET"); fi
           if [ -n "$INPUT_REF_ISSUE" ]; then CMD+=(--ref-issue="$INPUT_REF_ISSUE"); fi
+          if [ -n "$INPUT_MAX_STEPS" ]; then CMD+=(--max-steps="$INPUT_MAX_STEPS"); fi
         else
           CMD=(ai:review --pr="$PR_NUMBER" --output=json)
           if [ "$INPUT_COMMENT" = "true" ]; then CMD+=(--comment); fi
@@ -311,6 +317,16 @@ runs:
         if [ -n "$PROGRESS_PID" ]; then kill "$PROGRESS_PID" 2>/dev/null || true; fi
         echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
         echo "Tackle finished with exit code $EXIT_CODE (result in tackle-result.json)."
+
+        # On failure, surface the result document in the log (minus the full
+        # event stream — keep the last few for context) so a dead headless
+        # run explains itself instead of leaving only an exit code.
+        if [ "$EXIT_CODE" -ne 0 ] && [ -s "$RUNNER_TEMP/tackle-result.json" ]; then
+          echo "--- Tackle result (diagnostics) ---"
+          jq -c 'del(.events) + {last_events: ((.events // [])[-10:])}' "$RUNNER_TEMP/tackle-result.json" 2>/dev/null \
+            || head -c 4000 "$RUNNER_TEMP/tackle-result.json"
+          echo "--- end result ---"
+        fi
 
         # Safety net: the checkout is destroyed when the job ends, so any
         # task work left uncommitted would be lost. Commit, push, and open a
