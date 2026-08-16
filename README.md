@@ -5,6 +5,8 @@ levels, incremental re-reviews on every push, and optional merge gating —
 powered by [Laravel Tackle](https://github.com/JordanDalton/laravel-tackle),
 running inside your own app.
 
+> 📚 **Full documentation: [tackle.jordandalton.com](https://tackle.jordandalton.com/integrations/review-action)**
+
 ## Usage
 
 Your app must have Tackle installed:
