@@ -64,19 +64,27 @@ inputs:
     required: false
     default: ''
   run-type:
-    description: 'What to run: review (default) runs ai:review; task runs ai:run with the given task prompt.'
+    description: 'What to run: review (default) runs ai:review; task runs ai:run with the given task prompt; upgrade runs ai:upgrade --headless for the given packages.'
     required: false
     default: 'review'
   task:
     description: 'Task prompt for run-type: task. Passed to php artisan ai:run.'
     required: false
     default: ''
+  packages:
+    description: 'Composer packages to upgrade for run-type: upgrade, space- or comma-separated (e.g. "pestphp/pest spatie/laravel-permission"). Each package gets its own headless session and pull request. Requires jordandalton/laravel-tackle >= 1.27.'
+    required: false
+    default: ''
+  ref-issue:
+    description: 'GitHub issue number the upgrade PR(s) reference as "Refs #N" — typically the audit issue maintained by ai:upgrade --audit --issue. Upgrade runs only.'
+    required: false
+    default: ''
   budget:
-    description: 'Spend limit in USD, passed as --budget on task runs.'
+    description: 'Spend limit in USD, passed as --budget on task and upgrade runs (per package for upgrades).'
     required: false
     default: ''
   app-env:
-    description: 'APP_ENV for task runs. Controls Tackle''s environment-keyed safety allowlists; the CI checkout is disposable, so local is the default.'
+    description: 'APP_ENV for task and upgrade runs. Controls Tackle''s environment-keyed safety allowlists; the CI checkout is disposable, so local is the default.'
     required: false
     default: 'local'
   report-url:
@@ -125,10 +133,10 @@ runs:
           || echo "::warning::Failed to POST the started ping (the run is unaffected)."
 
     - name: Require a pull_request event or an explicit pr-number
-      if: github.event_name != 'pull_request' && inputs.pr-number == '' && inputs.run-type != 'task'
+      if: github.event_name != 'pull_request' && inputs.pr-number == '' && inputs.run-type != 'task' && inputs.run-type != 'upgrade'
       shell: bash
       run: |
-        echo "::error::tackle-review reviews need a pull_request event or an explicit pr-number; task runs (run-type: task) need neither (got event: ${{ github.event_name }})."
+        echo "::error::tackle-review reviews need a pull_request event or an explicit pr-number; task and upgrade runs need neither (got event: ${{ github.event_name }})."
         exit 1
 
     - name: Require a task prompt for task runs
@@ -136,6 +144,13 @@ runs:
       shell: bash
       run: |
         echo "::error::run-type is 'task' but no task prompt was provided. Set the task input."
+        exit 1
+
+    - name: Require packages for upgrade runs
+      if: inputs.run-type == 'upgrade' && inputs.packages == ''
+      shell: bash
+      run: |
+        echo "::error::run-type is 'upgrade' but no packages were provided. Set the packages input — headless upgrades never pick their own targets."
         exit 1
 
     - name: Require an API key
@@ -176,6 +191,16 @@ runs:
           exit 1
         fi
 
+    - name: Verify ai:upgrade is available
+      if: inputs.run-type == 'upgrade'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if ! php artisan list --raw 2>/dev/null | grep -q '^ai:upgrade'; then
+          echo "::error::This app's jordandalton/laravel-tackle does not ship ai:upgrade. Upgrade it: composer require jordandalton/laravel-tackle:^1.27"
+          exit 1
+        fi
+
     - name: Run Tackle
       id: run
       shell: bash
@@ -187,6 +212,8 @@ runs:
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_RUN_TYPE: ${{ inputs.run-type }}
         INPUT_TASK: ${{ inputs.task }}
+        INPUT_PACKAGES: ${{ inputs.packages }}
+        INPUT_REF_ISSUE: ${{ inputs.ref-issue }}
         INPUT_BUDGET: ${{ inputs.budget }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
@@ -235,6 +262,19 @@ runs:
           # --yes: headless CI has no one to answer confirmation prompts.
           CMD=(ai:run "$INPUT_TASK" --output=json --allowlist --yes)
           if [ -n "$INPUT_BUDGET" ]; then CMD+=(--budget="$INPUT_BUDGET"); fi
+        elif [ "$INPUT_RUN_TYPE" = "upgrade" ]; then
+          # Same disposable-sandbox posture as task runs.
+          export APP_ENV="${INPUT_APP_ENV:-local}"
+          # Give the agent a git identity so it can commit and open PRs itself.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # ai:upgrade opens its own PR per package. --no-worktree because the
+          # checkout is already disposable; composer lifecycle scripts stay
+          # suppressed by construction in headless mode.
+          read -r -a PACKAGES <<< "$(echo "$INPUT_PACKAGES" | tr ',' ' ')"
+          CMD=(ai:upgrade "${PACKAGES[@]}" --headless --output=json --no-worktree --allowlist)
+          if [ -n "$INPUT_BUDGET" ]; then CMD+=(--budget="$INPUT_BUDGET"); fi
+          if [ -n "$INPUT_REF_ISSUE" ]; then CMD+=(--ref-issue="$INPUT_REF_ISSUE"); fi
         else
           CMD=(ai:review --pr="$PR_NUMBER" --output=json)
           if [ "$INPUT_COMMENT" = "true" ]; then CMD+=(--comment); fi

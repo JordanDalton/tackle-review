@@ -100,6 +100,64 @@ The `respond` action accepts the same provider inputs as the review action
 (`provider`, `model`, `api-key`, prices), plus `trigger` (default `/tackle`)
 and `budget`.
 
+## Upgrading dependencies from an issue: `run-type: upgrade`
+
+Tackle can watch your dependencies and turn "a new major is out" into a
+reviewed pull request, with humans only at the two decision points.
+
+In the app, schedule the audit (`jordandalton/laravel-tackle` >= 1.27). It
+maintains exactly one GitHub issue listing every direct dependency with a new
+major and what blocks it — updated in place, closed when nothing remains:
+
+```php
+// routes/console.php
+Schedule::command('ai:upgrade --audit --issue')->daily();
+```
+
+Then add a workflow that fires when a maintainer labels that issue, and runs
+the headless upgrade — one isolated session and one PR per package:
+
+```yaml
+name: Tackle Upgrade
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+concurrency: tackle-upgrade
+
+jobs:
+  upgrade:
+    if: github.event.label.name == 'tackle-upgrade'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JordanDalton/tackle-review@v1
+        with:
+          run-type: upgrade
+          packages: pestphp/pest        # or "pkg-one pkg-two" — one PR each
+          ref-issue: ${{ github.event.issue.number }}
+          budget: '3'
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Each PR carries the plan, the honest verification summary (including what the
+test suite did **not** cover), and `Refs #<issue>`. Merge the PRs and the next
+scheduled audit closes the issue by itself.
+
+Why the label gate matters: issue bodies are untrusted input on any repo
+others can open issues in. Only a maintainer action — a label they applied —
+should hand an agent write access. The workflow's `if:` enforces that, and
+`concurrency` stops two labels from racing.
+
+Safety posture, inherited from `ai:upgrade --headless`: composer lifecycle
+scripts can never run (enabling them requires an interactive approval that
+headless mode cannot give), the budget applies per package, and nothing lands
+without a human merging the PR.
+
 ## Using other providers
 
 Tackle is built on [`laravel/ai`](https://github.com/laravel/ai) and runs on
@@ -139,9 +197,11 @@ composite action steps inherit it.
 | `php-version` | `8.3` | PHP version to set up — match your app's requirement (Laravel 13 apps typically need `8.4`) |
 | `working-directory` | `.` | Laravel app directory, for monorepos |
 | `pr-number` | *(from event)* | Explicit PR number for dispatch mode — checks out `refs/pull/<n>/head` instead of relying on a `pull_request` event |
-| `run-type` | `review` | `review` runs `ai:review`; `task` runs `ai:run` with the `task` prompt |
+| `run-type` | `review` | `review` runs `ai:review`; `task` runs `ai:run` with the `task` prompt; `upgrade` runs `ai:upgrade --headless` for `packages` |
 | `task` | *(empty)* | Task prompt for `run-type: task` |
-| `budget` | *(app default)* | Spend limit in USD, passed as `--budget` on task runs |
+| `packages` | *(empty)* | Packages for `run-type: upgrade`, space- or comma-separated — one headless session and PR each |
+| `ref-issue` | *(empty)* | Issue number upgrade PRs reference as `Refs #N` (e.g. the scheduled audit issue) |
+| `budget` | *(app default)* | Spend limit in USD, passed as `--budget` on task and upgrade runs (per package for upgrades) |
 | `report-url` | *(empty)* | URL to POST the JSON run result to when the run finishes (see Tackle Cloud below) |
 | `report-token` | *(empty)* | Bearer token for the `Authorization` header when posting to `report-url` |
 
